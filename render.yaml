@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: youtube-downloader-api
+    env: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: DOWNLOAD_DIR
+        value: /app/downloads
+      - key: FILE_TTL_HOURS
+        value: "12"
+      - key: CLEANUP_INTERVAL_MINUTES
+        value: "30"
+      - key: MAX_FILE_SIZE_MB
+        value: "500"
+      - key: DOWNLOAD_TIMEOUT_MS
+        value: "300000"
+    disk:
+      name: downloads-disk
+      mountPath: /app/downloads
+      sizeGB: 1

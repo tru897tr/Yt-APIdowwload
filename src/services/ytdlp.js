@@ -37,6 +37,24 @@ function runYtDlp(args, { timeoutMs = CONFIG.DOWNLOAD_TIMEOUT_MS } = {}) {
 }
 
 /**
+ * Trả về các flag chung áp dụng cho mọi lệnh yt-dlp:
+ * - Cookies (nếu có cấu hình COOKIES_PATH) để né lỗi "Sign in to confirm you're not a bot".
+ * - Giả lập player client "android" - thường ít bị yêu cầu xác minh bot hơn client web,
+ *   và không cần PO token như client web/tv hiện tại.
+ */
+function buildAntiBotArgs() {
+  const args = [];
+
+  if (CONFIG.COOKIES_PATH) {
+    args.push("--cookies", CONFIG.COOKIES_PATH);
+  }
+
+  args.push("--extractor-args", "youtube:player_client=android,web");
+
+  return args;
+}
+
+/**
  * Validate rằng input là một URL YouTube hợp lệ.
  * Chặn sớm để không pass input rác / cờ ẩn vào yt-dlp.
  */
@@ -67,6 +85,7 @@ export async function fetchVideoInfo(url) {
     "--no-warnings",
     "--no-playlist",
     "--no-check-certificates",
+    ...buildAntiBotArgs(),
     url,
   ];
 
@@ -142,6 +161,7 @@ export async function downloadVideo({ url, quality, outputTemplate }) {
     "--no-check-certificates",
     "--max-filesize",
     `${CONFIG.MAX_FILE_SIZE_MB}M`,
+    ...buildAntiBotArgs(),
     "-o",
     outputTemplate,
     "--print",

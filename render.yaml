@@ -19,6 +19,9 @@ services:
         value: "500"
       - key: DOWNLOAD_TIMEOUT_MS
         value: "300000"
+      - key: COOKIES_PATH
+        value: /app/cookies.txt
+        sync: false
     disk:
       name: downloads-disk
       mountPath: /app/downloads

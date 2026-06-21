@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
+import fs from "fs";
 
 import { CONFIG } from "./config.js";
 import { ensureDownloadDir, startCleanupCron, cleanupExpired } from "./services/storage.js";
@@ -52,4 +53,26 @@ app.listen(CONFIG.PORT, () => {
   console.log(`🚀 YouTube Downloader API running on port ${CONFIG.PORT}`);
   console.log(`   Download dir: ${CONFIG.DOWNLOAD_DIR}`);
   console.log(`   File TTL: ${CONFIG.FILE_TTL_HOURS}h`);
+
+  if (CONFIG.COOKIES_PATH) {
+    const exists = fs.existsSync(CONFIG.COOKIES_PATH);
+    console.log(`   Cookies path: ${CONFIG.COOKIES_PATH} (exists=${exists})`);
+    if (!exists) {
+      console.warn(
+        `   ⚠️  COOKIES_PATH is set but the file was not found at startup. ` +
+          `Check your Render Secret File name/path.`
+      );
+    }
+  } else {
+    console.log(`   Cookies path: not configured (COOKIES_PATH env var not set)`);
+  }
+
+  // In luôn danh sách file thực tế trong /etc/secrets để dễ đối chiếu khi debug trên Render
+  try {
+    if (fs.existsSync("/etc/secrets")) {
+      console.log(`   /etc/secrets contents: ${fs.readdirSync("/etc/secrets").join(", ") || "(empty)"}`);
+    }
+  } catch {
+    /* ignore */
+  }
 });

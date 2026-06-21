@@ -20,7 +20,7 @@ services:
       - key: DOWNLOAD_TIMEOUT_MS
         value: "300000"
       - key: COOKIES_PATH
-        value: /app/cookies.txt
+        value: /etc/secrets/cookies.txt
         sync: false
     disk:
       name: downloads-disk

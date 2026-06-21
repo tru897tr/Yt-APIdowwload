@@ -19,6 +19,10 @@ export const CONFIG = {
   // Đường dẫn tới binary yt-dlp (đã cài qua pip trong Dockerfile)
   YTDLP_PATH: process.env.YTDLP_PATH || "yt-dlp",
 
+  // Đường dẫn file cookies.txt (export từ browser) để né chặn "Sign in to confirm
+  // you're not a bot" khi chạy trên IP datacenter như Render. Để trống nếu không dùng.
+  COOKIES_PATH: process.env.COOKIES_PATH || null,
+
   // Public base URL để build link download (Render sẽ set qua env RENDER_EXTERNAL_URL)
   PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || null,
 

@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import fs from "fs";
 import { CONFIG } from "../config.js";
 
 /**
@@ -6,6 +7,8 @@ import { CONFIG } from "../config.js";
  * Không dùng exec/shell string để tránh injection - dùng spawn với array args.
  */
 function runYtDlp(args, { timeoutMs = CONFIG.DOWNLOAD_TIMEOUT_MS } = {}) {
+  console.log(`[ytdlp] spawning: ${CONFIG.YTDLP_PATH} ${args.join(" ")}`);
+
   return new Promise((resolve, reject) => {
     const proc = spawn(CONFIG.YTDLP_PATH, args, { windowsHide: true });
 
@@ -23,13 +26,19 @@ function runYtDlp(args, { timeoutMs = CONFIG.DOWNLOAD_TIMEOUT_MS } = {}) {
 
     proc.on("error", (err) => {
       clearTimeout(timer);
+      console.error(`[ytdlp] spawn error: ${err.message}`);
       reject(err);
     });
 
     proc.on("close", (code) => {
       clearTimeout(timer);
       if (killed) {
+        console.error("[ytdlp] process timed out and was killed");
         return reject(new Error("yt-dlp timed out"));
+      }
+      console.log(`[ytdlp] exited with code=${code}`);
+      if (code !== 0) {
+        console.error(`[ytdlp] stderr:\n${stderr}`);
       }
       resolve({ stdout, stderr, code });
     });
@@ -46,7 +55,21 @@ function buildAntiBotArgs() {
   const args = [];
 
   if (CONFIG.COOKIES_PATH) {
-    args.push("--cookies", CONFIG.COOKIES_PATH);
+    const exists = fs.existsSync(CONFIG.COOKIES_PATH);
+    console.log(
+      `[ytdlp] COOKIES_PATH="${CONFIG.COOKIES_PATH}" exists=${exists}` +
+        (exists ? ` size=${fs.statSync(CONFIG.COOKIES_PATH).size}bytes` : "")
+    );
+    if (exists) {
+      args.push("--cookies", CONFIG.COOKIES_PATH);
+    } else {
+      console.warn(
+        `[ytdlp] WARNING: COOKIES_PATH is set but file does not exist on disk. ` +
+          `Cookies will NOT be used for this request.`
+      );
+    }
+  } else {
+    console.log("[ytdlp] COOKIES_PATH is not set - running without cookies.");
   }
 
   args.push("--extractor-args", "youtube:player_client=android,web");

@@ -103,7 +103,7 @@ function buildAntiBotArgs() {
     console.log("[ytdlp] COOKIES_PATH is not set - running without cookies.");
   }
 
-  args.push("--extractor-args", "youtube:player_client=android,web");
+  args.push("--extractor-args", "youtube:player_client=web,android,tv");
 
   return args;
 }
@@ -151,29 +151,36 @@ export async function fetchVideoInfo(url) {
 
   const data = JSON.parse(stdout);
 
-  // Chỉ lấy danh sách quality video+audio đã mux sẵn hoặc dễ chọn,
-  // để trả về cho client gọn gàng (tránh trả nguyên 100 format lẻ tẻ của yt-dlp).
+  // Lấy danh sách quality từ mọi format có video (không ép cứng ext=mp4),
+  // vì Shorts/video một số trường hợp chỉ có sẵn webm ở các height cao.
+  // File trả về cho client cuối cùng vẫn luôn là .mp4 (đã mux qua ffmpeg ở
+  // bước download), nên không cần lo ext gốc khác mp4 ở bước info này.
   const formats = (data.formats || [])
-    .filter((f) => f.vcodec && f.vcodec !== "none" && f.ext === "mp4")
+    .filter((f) => f.vcodec && f.vcodec !== "none" && f.height)
     .map((f) => ({
       format_id: f.format_id,
-      quality: f.format_note || f.height ? `${f.height}p` : f.format_note,
+      quality: `${f.height}p`,
       height: f.height || null,
       fps: f.fps || null,
       filesize_mb: f.filesize ? Math.round((f.filesize / 1024 / 1024) * 10) / 10 : null,
-      has_audio: f.acodec && f.acodec !== "none",
+      has_audio: Boolean(f.acodec && f.acodec !== "none"),
       ext: f.ext,
     }))
-    .filter((f) => f.height)
     .sort((a, b) => (b.height || 0) - (a.height || 0));
 
-  // Loại trùng theo height, giữ bản có audio nếu có
+  // Loại trùng theo height, giữ bản có audio nếu có, ưu tiên mp4 nếu cùng điều kiện
   const seen = new Map();
   for (const f of formats) {
     const key = f.height;
-    if (!seen.has(key) || (!seen.get(key).has_audio && f.has_audio)) {
+    const current = seen.get(key);
+    if (!current) {
       seen.set(key, f);
+      continue;
     }
+    const fIsBetter =
+      (f.has_audio && !current.has_audio) ||
+      (f.has_audio === current.has_audio && f.ext === "mp4" && current.ext !== "mp4");
+    if (fIsBetter) seen.set(key, f);
   }
 
   return {
@@ -187,32 +194,11 @@ export async function fetchVideoInfo(url) {
   };
 }
 
-/**
- * Tải video theo quality được chọn (vd "720", "1080", "best", "worst").
- * Trả về đường dẫn file đã tải trên disk.
- */
-export async function downloadVideo({ url, quality, outputTemplate }) {
-  // Format selector: nhiều tầng fallback, không ép cứng ext ở từng bước
-  // (chỉ ép mp4 ở output cuối qua --merge-output-format, ffmpeg tự convert khi cần).
-  // Điều này quan trọng với Shorts / video có ít format khả dụng, dễ bị
-  // "Requested format is not available" nếu ép ext quá sớm.
-  let formatSelector = "bestvideo+bestaudio/best";
-
-  if (quality && quality !== "best" && quality !== "worst") {
-    const height = parseInt(quality, 10);
-    if (!Number.isNaN(height)) {
-      formatSelector =
-        `bestvideo[height<=${height}]+bestaudio/` +
-        `best[height<=${height}]/` +
-        `bestvideo+bestaudio/best`;
-    }
-  } else if (quality === "worst") {
-    formatSelector = "worstvideo+worstaudio/worst";
-  }
-
+async function attemptDownload(url, formatSelector, sortOrder, outputTemplate) {
   const args = [
     "-f",
     formatSelector,
+    ...(sortOrder ? ["-S", sortOrder] : []),
     "--merge-output-format",
     "mp4",
     "--no-playlist",
@@ -228,7 +214,51 @@ export async function downloadVideo({ url, quality, outputTemplate }) {
     url,
   ];
 
-  const { stdout, stderr, code } = await runYtDlp(args);
+  return runYtDlp(args);
+}
+
+/**
+ * Tải video theo quality được chọn (vd "720", "1080", "best", "worst").
+ * Trả về đường dẫn file đã tải trên disk.
+ */
+export async function downloadVideo({ url, quality, outputTemplate }) {
+  // Dùng kết hợp -f (giới hạn trần chất lượng) + -S (ưu tiên sắp xếp) thay vì
+  // chỉ dùng -f filter cứng. Cách này khớp được cả 2 kiểu format YouTube trả về:
+  // - Format tách rời video/audio (client web) -> cần cộng (+)
+  // - Format đã muxed sẵn (client android/tv) -> không cần cộng, "+" sẽ không khớp
+  let formatSelector = "bv*+ba/b";
+  let sortOrder = null;
+
+  if (quality && quality !== "best" && quality !== "worst") {
+    const height = parseInt(quality, 10);
+    if (!Number.isNaN(height)) {
+      formatSelector = `bv*[height<=${height}]+ba/b[height<=${height}]/bv*+ba/b`;
+      sortOrder = `res:${height}`;
+    }
+  } else if (quality === "worst") {
+    formatSelector = "wv*+wa/w";
+    sortOrder = "+res";
+  }
+
+  let { stdout, stderr, code } = await attemptDownload(
+    url,
+    formatSelector,
+    sortOrder,
+    outputTemplate
+  );
+
+  // Fallback: nếu format yêu cầu không khớp được gì, thử lại với "best" không
+  // điều kiện kèm -S theo chất lượng mong muốn, vẫn ưu tiên đúng hướng nhưng
+  // không loại trừ ứng viên nào tuyệt đối.
+  if (code !== 0 && /[Rr]equested format is not available/.test(stderr)) {
+    console.warn(
+      `[ytdlp] format selector "${formatSelector}" failed, retrying with fallback "best"`
+    );
+    const retry = await attemptDownload(url, "best", sortOrder, outputTemplate);
+    stdout = retry.stdout;
+    stderr = retry.stderr;
+    code = retry.code;
+  }
 
   if (code !== 0) {
     throw new Error(`yt-dlp download error: ${stderr.slice(0, 1500)}`);

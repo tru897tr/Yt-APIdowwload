@@ -1,6 +1,38 @@
 import { spawn } from "child_process";
 import fs from "fs";
+import path from "path";
+import os from "os";
 import { CONFIG } from "../config.js";
+
+// Cache đường dẫn cookies writable đã copy, để không phải copy lại mỗi request
+let writableCookiesPath = null;
+
+/**
+ * Render Secret Files được mount read-only ở /etc/secrets/.
+ * yt-dlp có thể cố ghi lại cookies đã refresh vào chính file --cookies khi
+ * đóng tiến trình (save_cookies), và sẽ crash nếu file đó read-only.
+ * Giải pháp: copy cookies sang một file writable trong /tmp trước, dùng file đó.
+ */
+function getWritableCookiesPath() {
+  if (!CONFIG.COOKIES_PATH) return null;
+
+  if (writableCookiesPath && fs.existsSync(writableCookiesPath)) {
+    return writableCookiesPath;
+  }
+
+  try {
+    if (!fs.existsSync(CONFIG.COOKIES_PATH)) return null;
+    const dest = path.join(os.tmpdir(), "yt-cookies-writable.txt");
+    fs.copyFileSync(CONFIG.COOKIES_PATH, dest);
+    fs.chmodSync(dest, 0o600);
+    writableCookiesPath = dest;
+    console.log(`[ytdlp] copied cookies to writable path: ${dest}`);
+    return dest;
+  } catch (err) {
+    console.error(`[ytdlp] failed to copy cookies to writable path: ${err.message}`);
+    return null;
+  }
+}
 
 /**
  * Chạy yt-dlp với danh sách arguments, trả về { stdout, stderr, code }
@@ -55,16 +87,15 @@ function buildAntiBotArgs() {
   const args = [];
 
   if (CONFIG.COOKIES_PATH) {
-    const exists = fs.existsSync(CONFIG.COOKIES_PATH);
+    const writablePath = getWritableCookiesPath();
     console.log(
-      `[ytdlp] COOKIES_PATH="${CONFIG.COOKIES_PATH}" exists=${exists}` +
-        (exists ? ` size=${fs.statSync(CONFIG.COOKIES_PATH).size}bytes` : "")
+      `[ytdlp] COOKIES_PATH="${CONFIG.COOKIES_PATH}" resolved writable path="${writablePath}"`
     );
-    if (exists) {
-      args.push("--cookies", CONFIG.COOKIES_PATH);
+    if (writablePath) {
+      args.push("--cookies", writablePath);
     } else {
       console.warn(
-        `[ytdlp] WARNING: COOKIES_PATH is set but file does not exist on disk. ` +
+        `[ytdlp] WARNING: COOKIES_PATH is set but file could not be prepared. ` +
           `Cookies will NOT be used for this request.`
       );
     }
@@ -161,17 +192,22 @@ export async function fetchVideoInfo(url) {
  * Trả về đường dẫn file đã tải trên disk.
  */
 export async function downloadVideo({ url, quality, outputTemplate }) {
-  // Format selector: nếu user truyền số (chiều cao), build selector mux mp4
-  // best video <= height + best audio, fallback "best" nếu không match.
-  let formatSelector = "best[ext=mp4]/best";
+  // Format selector: nhiều tầng fallback, không ép cứng ext ở từng bước
+  // (chỉ ép mp4 ở output cuối qua --merge-output-format, ffmpeg tự convert khi cần).
+  // Điều này quan trọng với Shorts / video có ít format khả dụng, dễ bị
+  // "Requested format is not available" nếu ép ext quá sớm.
+  let formatSelector = "bestvideo+bestaudio/best";
 
   if (quality && quality !== "best" && quality !== "worst") {
     const height = parseInt(quality, 10);
     if (!Number.isNaN(height)) {
-      formatSelector = `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best`;
+      formatSelector =
+        `bestvideo[height<=${height}]+bestaudio/` +
+        `best[height<=${height}]/` +
+        `bestvideo+bestaudio/best`;
     }
   } else if (quality === "worst") {
-    formatSelector = "worst[ext=mp4]/worst";
+    formatSelector = "worstvideo+worstaudio/worst";
   }
 
   const args = [
@@ -195,7 +231,7 @@ export async function downloadVideo({ url, quality, outputTemplate }) {
   const { stdout, stderr, code } = await runYtDlp(args);
 
   if (code !== 0) {
-    throw new Error(`yt-dlp download error: ${stderr.slice(0, 800)}`);
+    throw new Error(`yt-dlp download error: ${stderr.slice(0, 1500)}`);
   }
 
   const filepath = stdout.trim().split("\n").filter(Boolean).pop();
